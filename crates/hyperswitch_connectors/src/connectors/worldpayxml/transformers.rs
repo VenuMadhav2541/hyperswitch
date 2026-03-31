@@ -1105,33 +1105,25 @@ impl TryFrom<&WorldpayxmlRouterData<&PaymentsAuthorizeRouterData>> for PaymentSe
             None
         };
 
-        let info_threed_secure = item
-            .router_data
-            .request
-            .authentication_data
-            .as_ref()
-            .map(|auth_data| Info3DSecure {
-                completed_authentication: None,
-                eci: auth_data.eci.clone(),
-                cavv: Some(auth_data.cavv.clone()),
-                ds_transaction_id: auth_data.ds_trans_id.clone(),
-                three_ds_version: auth_data
-                    .message_version
-                    .as_ref()
-                    .map(|v| v.to_string()),
-            });
+        let info_threed_secure =
+            item.router_data
+                .request
+                .authentication_data
+                .as_ref()
+                .map(|auth_data| Info3DSecure {
+                    completed_authentication: None,
+                    eci: auth_data.eci.clone(),
+                    cavv: Some(auth_data.cavv.clone()),
+                    ds_transaction_id: auth_data.ds_trans_id.clone(),
+                    three_ds_version: auth_data.message_version.as_ref().map(|v| v.to_string()),
+                });
 
         let mut payment_details = payment_details;
         payment_details.info_threed_secure = info_threed_secure;
 
         // additional3DSData is a child of <order>, not <paymentDetails> per WorldpayXML DTD.
         // Skip it when external authentication data is present (pre-authenticated flow).
-        let additional_threeds_data = if item
-            .router_data
-            .request
-            .authentication_data
-            .is_some()
-        {
+        let additional_threeds_data = if item.router_data.request.authentication_data.is_some() {
             None
         } else {
             additional_threeds_data
