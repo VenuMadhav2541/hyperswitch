@@ -528,9 +528,7 @@ fn build_paypal_external_authentication(
             cavv: Some(auth_data.cavv.clone()),
             ds_transaction_id: auth_data.ds_trans_id.clone(),
             acs_transaction_id: auth_data.acs_trans_id.clone(),
-            three_ds_server_transaction_id: auth_data
-                .threeds_server_transaction_id
-                .clone(),
+            three_ds_server_transaction_id: auth_data.threeds_server_transaction_id.clone(),
         },
     }
 }
