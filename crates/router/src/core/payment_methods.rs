@@ -1188,8 +1188,7 @@ pub async fn create_persistent_payment_method_core(
             .await
         }
         api::PaymentMethodCreateData::Wallet(wallet_data) => {
-            let additional_data =
-                domain::PaymentMethodsData::WalletDetails(*wallet_data.clone());
+            let additional_data = domain::PaymentMethodsData::WalletDetails(*wallet_data.clone());
             create_payment_method_wallet_core(
                 state,
                 req,
@@ -1204,8 +1203,7 @@ pub async fn create_persistent_payment_method_core(
             .await
         }
         api::PaymentMethodCreateData::Paypal(paypal_data) => {
-            let additional_data =
-                domain::PaymentMethodsData::PaypalDetails(*paypal_data.clone());
+            let additional_data = domain::PaymentMethodsData::PaypalDetails(*paypal_data.clone());
             create_payment_method_wallet_core(
                 state,
                 req,
@@ -5843,9 +5841,9 @@ impl<'a> pm_types::PaymentMethodUpdateHandler<'a> {
 
     fn validate(&self) -> RouterResult<()> {
         let payment_method = &self.payment_method;
-        let is_wallet_connector_token_update =
-            payment_method.payment_method_type == Some(enums::PaymentMethod::Wallet)
-                && self.request.connector_token_details.is_some();
+        let is_wallet_connector_token_update = payment_method.payment_method_type
+            == Some(enums::PaymentMethod::Wallet)
+            && self.request.connector_token_details.is_some();
         when(
             payment_method.status == enums::PaymentMethodStatus::Inactive
                 && !is_wallet_connector_token_update,
