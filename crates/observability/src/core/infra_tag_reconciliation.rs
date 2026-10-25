@@ -121,8 +121,9 @@ pub async fn reconcile_batch(
     if !(1..=MAX_BATCH_SIZE).contains(&limit) {
         return Err(ReconciliationError::InvalidLimit);
     }
+    let limit = i64::try_from(limit).map_err(|_| ReconciliationError::InvalidLimit)?;
     let rules = store
-        .list_infra_reconciliation_batch(after, limit as i64)
+        .list_infra_reconciliation_batch(after, limit)
         .await
         .map_err(|_| ReconciliationError::Storage)?;
     let mut changes = Vec::with_capacity(rules.len());

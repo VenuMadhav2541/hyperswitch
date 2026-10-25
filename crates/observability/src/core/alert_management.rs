@@ -165,8 +165,8 @@ mod tests {
 
     #[test]
     fn silence_uses_tag_and_group_and_semantics() {
-        let first = Uuid::new_v4();
-        let second = Uuid::new_v4();
+        let first = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
+        let second = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();
         let mut context = context(datetime!(2026-10-25 10:00));
         context.attached_tag_ids.insert(first);
         let configuration = silence(

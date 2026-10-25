@@ -34,7 +34,7 @@ impl AlertRule {
         after: Option<&str>,
         limit: i64,
     ) -> StorageResult<Vec<Self>> {
-        let mut query = dsl::alert_rules.into_boxed();
+        let mut query = crate::list::into_boxed_list(dsl::alert_rules);
         if let Some(after) = after {
             query = query.filter(dsl::id.gt(after.to_owned()));
         }
