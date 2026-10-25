@@ -1,9 +1,18 @@
 //! Storage operations for alert rules.
 
-use diesel_models::{observability::alert_manager::alert_rules as storage, StorageResult};
+use diesel_models::{
+    errors::DatabaseError, observability::alert_manager::alert_rules as storage, StorageResult,
+};
+use error_stack::report;
 use time::PrimitiveDateTime;
 
-use crate::{db::Store, domain_models::alert_rules as domain};
+use crate::{
+    db::Store,
+    domain_models::{
+        alert_rules as domain,
+        infra_tags::{assignments_for_rule, ExplicitAssignments, SYSTEM_TAG_KEYS},
+    },
+};
 
 #[async_trait::async_trait]
 pub trait AlertRulesInterface {
@@ -55,8 +64,28 @@ impl AlertRulesInterface for Store {
         &self,
         new: domain::AlertRuleNew,
     ) -> StorageResult<domain::AlertRule> {
+        let assignments =
+            assignments_for_rule(new.alerts_configuration(), ExplicitAssignments::default())
+                .map_err(|_| report!(DatabaseError::Others))?;
+        if let Some(namespace) = &assignments.missing_service_namespace {
+            router_env::logger::warn!(
+                namespace = namespace,
+                "alert rule has no service classification for its CloudWatch namespace"
+            );
+        }
+        let system = assignments
+            .system
+            .into_iter()
+            .map(|tag| tag.into_new().map(Into::into))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| report!(DatabaseError::Others))?;
         storage::AlertRuleNew::from(new)
-            .upsert(&self.connection().await?)
+            .upsert_with_infra_tags(
+                &self.connection().await?,
+                SYSTEM_TAG_KEYS.iter().map(ToString::to_string).collect(),
+                system,
+                Vec::new(),
+            )
             .await
             .map(domain::AlertRule::from)
     }

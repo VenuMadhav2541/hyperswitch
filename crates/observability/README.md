@@ -483,11 +483,24 @@ All `TIMESTAMP` values follow the service's UTC convention. A silence is active 
 instant exactly when `starts_at <= now && now < ends_at`. The latest migration is destructive when
 rolled back because dropping these three tables removes their management data.
 
-These tables and internal Store interfaces only persist management intent. They do **not** yet
-seed a classification catalogue, group notifications, suppress delivery, change evaluation, or add
-public management HTTP endpoints. Runtime resolvers should consume
-`common_types::alert_management::{GroupingField, TagConfiguration, SilenceConfiguration}` and the
-`TagsInterface`, `TagMapperInterface`, and `SilencesInterface` seams rather than query Diesel rows.
+Database rule upserts atomically reconcile the proposed system-owned classification keys
+`alert_type=infra`, `metric_source=cloudwatch`, and the documented exact CloudWatch
+namespace-to-`service` mapping. Unknown namespaces retain the first two tags and emit a diagnostic;
+component and team values are accepted only as explicit reconciliation metadata. The proposed
+catalogue also describes `rule`, `daily`, `weekly`, `ec2_instance`, `rds_instance`, and `occurrence`
+grouping presets, but none is attached automatically.
+
+`core::infra_tag_reconciliation::{bootstrap_catalogue, reconcile_batch}` are the explicit
+administrative seams. Their preview mode is read-only; apply mode validates shared catalogue
+configuration and uses the same bounded per-rule atomic Store operation while preserving
+custom/grouping mappings and scheduling fields. It is intentionally not a startup hook or public
+API. Config-source rules remain in-memory and are not tagged because mapper foreign keys require a
+stored database rule.
+
+The pure normalized resolver uses the captured UTC occurrence time, with UTC calendar days and
+Monday-start UTC weeks. Missing requested fields are errors. This capability does **not** group or
+suppress live notifications: durable destination-specific anchors, delivery coordination and a
+stable occurrence lifecycle remain design-gated. No public management HTTP endpoints are added.
 
 Apply migrations with the observability-specific configuration and directory (only against the
 intended observability database):

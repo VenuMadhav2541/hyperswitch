@@ -18,6 +18,7 @@ pub mod alert_rules;
 pub mod alerts_info;
 pub mod blacklist;
 pub mod dictionary;
+pub mod infra_tags;
 pub mod lifecycle_events;
 pub mod metadata;
 pub mod rule_toggles;
@@ -48,6 +49,7 @@ pub trait StorageInterface:
     + alerts_info::AlertsInfoInterface
     + blacklist::BlacklistInterface
     + dictionary::DictionaryInterface
+    + infra_tags::InfraTagsInterface
     + lifecycle_events::LifecycleEventsInterface
     + metadata::AlertMetadataInterface
     + rule_toggles::RuleTogglesInterface
@@ -68,6 +70,29 @@ impl StorageInterface for Store {}
 #[macro_export]
 macro_rules! impl_unimplemented_alert_management_interfaces {
     ($store:ty) => {
+        #[async_trait::async_trait]
+        impl $crate::db::infra_tags::InfraTagsInterface for $store {
+            async fn list_infra_reconciliation_batch(
+                &self,
+                _after: Option<&str>,
+                _limit: i64,
+            ) -> diesel_models::StorageResult<Vec<$crate::domain_models::alert_rules::AlertRule>>
+            {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+            async fn reconcile_infra_tags(
+                &self,
+                _alert_rule_id: &str,
+                _assignments: $crate::domain_models::infra_tags::InfraTagAssignments,
+            ) -> diesel_models::StorageResult<bool> {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+        }
+
         #[async_trait::async_trait]
         impl $crate::db::tags::TagsInterface for $store {
             async fn create_tag(

@@ -24,11 +24,13 @@ use error_stack::report;
 use hyperswitch_masking::PeekInterface;
 use observability::{
     auth::X_INTERNAL_API_KEY,
+    core::infra_tag_reconciliation::{bootstrap_catalogue, reconcile_batch, ReconciliationMode},
     db::{
         alert_rules::AlertRulesInterface, alerts_info::AlertsInfoInterface,
         blacklist::BlacklistInterface, dictionary::DictionaryInterface,
         lifecycle_events::LifecycleEventsInterface, metadata::AlertMetadataInterface,
-        rule_toggles::RuleTogglesInterface, thresholds::ThresholdsInterface, StorageInterface,
+        rule_toggles::RuleTogglesInterface, tag_mapper::TagMapperInterface, tags::TagsInterface,
+        thresholds::ThresholdsInterface, StorageInterface,
     },
     domain::notifier::{
         chat::{
@@ -39,7 +41,12 @@ use observability::{
     },
     domain_models::{
         alert_rules::{AlertRule, AlertRuleNew},
-        alerts_info, blacklist, dictionary, lifecycle_events, metadata, rule_toggles, thresholds,
+        alerts_info, blacklist, dictionary,
+        infra_tags::ExplicitAssignments,
+        lifecycle_events, metadata, rule_toggles,
+        tag_mapper::AlertTagMapping,
+        tags::{AlertTagNew, CreateTagOutcome},
+        thresholds,
     },
     errors::{ObservabilityApiResult, ObservabilityError},
     routes::Alerts,
@@ -591,11 +598,45 @@ async fn postgres_repository_stores_replaces_claims_and_deletes_rules() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // The stored configuration reads back as it was written.
+    // The stored configuration reads back as it was written and receives exact classifications.
     let (_, read) = call(state.clone(), Method::GET, uri, Some(API_KEY), None).await;
     assert_eq!(read, created);
+    let tags = store.list_rule_tags("rds-writer-cpu").await.unwrap();
+    assert!(tags
+        .iter()
+        .any(|tag| tag.tag_key == "alert_type" && tag.tag_value == "infra"));
+    assert!(tags
+        .iter()
+        .any(|tag| tag.tag_key == "metric_source" && tag.tag_value == "cloudwatch"));
+    assert!(tags
+        .iter()
+        .any(|tag| tag.tag_key == "service" && tag.tag_value == "rds"));
 
-    // Replacing keeps `created_at` and makes the rule due again.
+    let custom = AlertTagNew::try_new(
+        "team".to_owned(),
+        "platform".to_owned(),
+        serde_json::from_value(json!({"version":"v1", "grouping":{"group_by":[]}})).unwrap(),
+    )
+    .unwrap();
+    let custom_id = match store.create_tag(custom).await.unwrap() {
+        CreateTagOutcome::Created(tag) => tag.id,
+        CreateTagOutcome::AlreadyExists => {
+            store
+                .list_tags()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|tag| tag.tag_key == "team" && tag.tag_value == "platform")
+                .unwrap()
+                .id
+        }
+    };
+    store
+        .attach_tag(AlertTagMapping::try_new("rds-writer-cpu".to_owned(), custom_id).unwrap())
+        .await
+        .unwrap();
+
+    // Replacing keeps `created_at`, custom mappings, and makes the rule due again.
     let (_, replaced) = call(
         state.clone(),
         Method::PUT,
@@ -606,6 +647,91 @@ async fn postgres_repository_stores_replaces_claims_and_deletes_rules() {
     .await;
     assert_eq!(replaced["created_at"], created["created_at"]);
     assert_eq!(replaced["name"], "RDS writer CPU, renamed");
+    assert!(store
+        .list_rule_tags("rds-writer-cpu")
+        .await
+        .unwrap()
+        .iter()
+        .any(|tag| tag.id == custom_id));
+
+    // A namespace change removes the stale reserved service mapping in the same upsert.
+    let ec2_rule = set(
+        rule("RDS writer CPU, renamed"),
+        "/alerts_configuration/query/namespace",
+        json!("AWS/EC2"),
+    );
+    call(
+        state.clone(),
+        Method::PUT,
+        uri,
+        Some(API_KEY),
+        Some(ec2_rule),
+    )
+    .await;
+    let tags = store.list_rule_tags("rds-writer-cpu").await.unwrap();
+    assert!(tags
+        .iter()
+        .any(|tag| tag.tag_key == "service" && tag.tag_value == "ec2"));
+    assert!(!tags
+        .iter()
+        .any(|tag| tag.tag_key == "service" && tag.tag_value == "rds"));
+    assert!(tags.iter().any(|tag| tag.id == custom_id));
+
+    // Explicit administration is previewable and idempotent, without touching scheduling.
+    assert!(
+        !bootstrap_catalogue(store.as_ref(), ReconciliationMode::Preview)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    bootstrap_catalogue(store.as_ref(), ReconciliationMode::Apply)
+        .await
+        .unwrap();
+    assert!(
+        bootstrap_catalogue(store.as_ref(), ReconciliationMode::Preview)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let scheduled = store
+        .find_alert_rule("rds-writer-cpu")
+        .await
+        .unwrap()
+        .unwrap()
+        .next_run_at;
+    let preview = reconcile_batch(
+        store.as_ref(),
+        None,
+        10,
+        ReconciliationMode::Preview,
+        |_| ExplicitAssignments {
+            component: Some("postgres".to_owned()),
+            team: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        preview[0].additions,
+        vec![("component".to_owned(), "postgres".to_owned())]
+    );
+    reconcile_batch(store.as_ref(), None, 10, ReconciliationMode::Apply, |_| {
+        ExplicitAssignments {
+            component: Some("postgres".to_owned()),
+            team: None,
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        store
+            .find_alert_rule("rds-writer-cpu")
+            .await
+            .unwrap()
+            .unwrap()
+            .next_run_at,
+        scheduled
+    );
 
     // Due once its time has come; a claim succeeds once for the time it was read at.
     let rule = store

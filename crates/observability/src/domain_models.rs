@@ -7,11 +7,13 @@
 //!
 //! Distinct from [`crate::domain`], which holds the traits that say what delivering an alert *is*.
 
+pub mod alert_context;
 pub mod alert_rules;
 pub mod alerts_info;
 pub mod blacklist;
 pub mod dictionary;
 pub mod evaluator;
+pub mod infra_tags;
 pub mod lifecycle_events;
 pub mod metadata;
 pub mod rule_toggles;
