@@ -166,6 +166,7 @@ impl AlertRulesInterface for MemoryStore {
     }
 }
 
+observability::impl_unimplemented_alert_management_interfaces!(MemoryStore);
 impl StorageInterface for MemoryStore {}
 
 #[async_trait::async_trait]

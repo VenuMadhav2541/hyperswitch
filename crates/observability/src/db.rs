@@ -21,6 +21,9 @@ pub mod dictionary;
 pub mod lifecycle_events;
 pub mod metadata;
 pub mod rule_toggles;
+pub mod silences;
+pub mod tag_mapper;
+pub mod tags;
 pub mod thresholds;
 
 use std::{sync::Arc, time::Duration};
@@ -48,11 +51,160 @@ pub trait StorageInterface:
     + lifecycle_events::LifecycleEventsInterface
     + metadata::AlertMetadataInterface
     + rule_toggles::RuleTogglesInterface
+    + silences::SilencesInterface
+    + tag_mapper::TagMapperInterface
+    + tags::TagsInterface
     + thresholds::ThresholdsInterface
 {
 }
 
 impl StorageInterface for Store {}
+
+/// Implement alert-management interfaces as explicit unsupported stubs for unrelated test stores.
+///
+/// Production stores must implement the interfaces directly. This macro keeps pre-existing route
+/// fixtures honest (they still satisfy every aggregate bound) without fabricating successful
+/// management writes that those fixtures never exercise.
+#[macro_export]
+macro_rules! impl_unimplemented_alert_management_interfaces {
+    ($store:ty) => {
+        #[async_trait::async_trait]
+        impl $crate::db::tags::TagsInterface for $store {
+            async fn create_tag(
+                &self,
+                _new: $crate::domain_models::tags::AlertTagNew,
+            ) -> diesel_models::StorageResult<$crate::domain_models::tags::CreateTagOutcome> {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+            async fn find_tag(
+                &self,
+                _id: uuid::Uuid,
+            ) -> diesel_models::StorageResult<Option<$crate::domain_models::tags::AlertTag>> {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+            async fn list_tags(
+                &self,
+            ) -> diesel_models::StorageResult<Vec<$crate::domain_models::tags::AlertTag>> {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+            async fn update_tag_configuration(
+                &self,
+                _id: uuid::Uuid,
+                _update: $crate::domain_models::tags::AlertTagConfigurationUpdate,
+            ) -> diesel_models::StorageResult<$crate::domain_models::tags::UpdateTagOutcome> {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+            async fn delete_tag(
+                &self,
+                _id: uuid::Uuid,
+            ) -> diesel_models::StorageResult<$crate::domain_models::tags::DeleteTagOutcome> {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl $crate::db::tag_mapper::TagMapperInterface for $store {
+            async fn attach_tag(
+                &self,
+                _mapping: $crate::domain_models::tag_mapper::AlertTagMapping,
+            ) -> diesel_models::StorageResult<$crate::domain_models::tag_mapper::AttachTagOutcome>
+            {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+            async fn detach_tag(
+                &self,
+                _mapping: $crate::domain_models::tag_mapper::AlertTagMapping,
+            ) -> diesel_models::StorageResult<$crate::domain_models::tag_mapper::DetachTagOutcome>
+            {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+            async fn list_rule_tags(
+                &self,
+                _alert_rule_id: &str,
+            ) -> diesel_models::StorageResult<Vec<$crate::domain_models::tags::AlertTag>> {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+            async fn list_tag_rules(
+                &self,
+                _tag_id: uuid::Uuid,
+            ) -> diesel_models::StorageResult<Vec<String>> {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl $crate::db::silences::SilencesInterface for $store {
+            async fn create_silence(
+                &self,
+                _new: $crate::domain_models::silences::AlertSilenceNew,
+            ) -> diesel_models::StorageResult<$crate::domain_models::silences::CreateSilenceOutcome>
+            {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+            async fn find_silence(
+                &self,
+                _id: uuid::Uuid,
+            ) -> diesel_models::StorageResult<Option<$crate::domain_models::silences::AlertSilence>>
+            {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+            async fn list_silences(
+                &self,
+            ) -> diesel_models::StorageResult<Vec<$crate::domain_models::silences::AlertSilence>>
+            {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+            async fn update_silence(
+                &self,
+                _id: uuid::Uuid,
+                _update: $crate::domain_models::silences::AlertSilenceUpdate,
+            ) -> diesel_models::StorageResult<$crate::domain_models::silences::UpdateSilenceOutcome>
+            {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+            async fn delete_silence(&self, _id: uuid::Uuid) -> diesel_models::StorageResult<bool> {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+            async fn list_active_silences(
+                &self,
+                _now: time::PrimitiveDateTime,
+            ) -> diesel_models::StorageResult<Vec<$crate::domain_models::silences::AlertSilence>>
+            {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
+        }
+    };
+}
 
 type PgPool = bb8::Pool<async_bb8_diesel::ConnectionManager<DejaPgConnection>>;
 

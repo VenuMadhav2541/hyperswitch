@@ -125,6 +125,7 @@ macro_rules! impl_unused_alert_rules {
 
 impl_unused_alert_rules!(MemoryStore);
 
+observability::impl_unimplemented_alert_management_interfaces!(MemoryStore);
 impl StorageInterface for MemoryStore {}
 
 #[async_trait::async_trait]

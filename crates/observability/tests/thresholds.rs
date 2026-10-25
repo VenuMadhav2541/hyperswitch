@@ -153,6 +153,7 @@ macro_rules! impl_unused_alert_rules {
 impl_unused_alert_rules!(MemoryStore);
 impl_unused_alert_rules!(FailingStore);
 
+observability::impl_unimplemented_alert_management_interfaces!(MemoryStore);
 impl StorageInterface for MemoryStore {}
 #[async_trait::async_trait]
 impl observability::db::lifecycle_events::LifecycleEventsInterface for FailingStore {
@@ -172,6 +173,7 @@ impl observability::db::lifecycle_events::LifecycleEventsInterface for FailingSt
     }
 }
 
+observability::impl_unimplemented_alert_management_interfaces!(FailingStore);
 impl StorageInterface for FailingStore {}
 
 macro_rules! impl_unused_blacklist {

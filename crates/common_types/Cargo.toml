@@ -19,6 +19,7 @@ serde_json = "1.0.140"
 strum = { version = "0.26", features = ["derive"] }
 utoipa = { version = "4.2.3", features = ["preserve_order", "preserve_path_order"] }
 time = { version = "0.3.35", features = ["serde", "serde-well-known", "std"] }
+uuid = { version = "1.17.0", features = ["serde"] }
 error-stack = "0.4.1"
 cpf_cnpj = "0.3"
 rust_decimal = { version = "1.37", features = ["maths"] }

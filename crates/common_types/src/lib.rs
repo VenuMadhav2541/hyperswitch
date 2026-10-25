@@ -2,6 +2,7 @@
 
 #![warn(missing_docs, missing_debug_implementations)]
 
+pub mod alert_management;
 #[allow(missing_docs)]
 pub mod alert_rules;
 pub mod consts;

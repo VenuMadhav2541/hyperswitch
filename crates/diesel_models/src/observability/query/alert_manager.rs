@@ -7,4 +7,7 @@ pub mod dictionary;
 pub mod lifecycle_events;
 pub mod metadata;
 pub mod rule_toggles;
+pub mod silences;
+pub mod tag_mapper;
+pub mod tags;
 pub mod thresholds;

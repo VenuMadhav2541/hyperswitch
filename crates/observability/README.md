@@ -460,6 +460,45 @@ To switch a deployment to the database without an alerting gap: deploy with `rul
 the rules with `PUT /alerts/rules/{id}`, then set `OBSERVABILITY__ALERT__RULE_SOURCE=database`, clear
 `OBSERVABILITY__ALERT__RULES` and roll out.
 
+## Alert management persistence
+
+The observability database has three management tables layered on `alert_rules`:
+
+- `alert_tags` stores immutable normalized key/value identities and a required, versioned JSONB
+  configuration. `grouping.group_by` is always present; an empty array means classification only.
+- `alert_tag_mapper` stores reusable many-to-many rule membership. Attach/detach and configuration
+  edits serialize their reference and conflict checks so a rule cannot acquire two
+  grouping-enabled tags.
+- `alert_silences` stores a required versioned selection (`tag_ids` plus `group_values`), a finite
+  UTC start/end interval and a reason. Every field remains required. Stopping a silence is a hard
+  delete; there are no enabled, actor, cancellation or soft-delete fields.
+
+Tag UUIDs inside silence JSONB cannot use a database foreign key. The repository therefore locks
+referenced tags while creating/editing a silence and uses the same lock protocol for managed tag
+removal. A tag cannot be deleted while attached or referenced by a non-expired silence; expired
+references may remain as history. Rule identifiers are stable semantic identities, so reusing one
+would also retarget a stored `alert_rule_id` silence restriction.
+
+All `TIMESTAMP` values follow the service's UTC convention. A silence is active at a captured UTC
+instant exactly when `starts_at <= now && now < ends_at`. The latest migration is destructive when
+rolled back because dropping these three tables removes their management data.
+
+These tables and internal Store interfaces only persist management intent. They do **not** yet
+seed a classification catalogue, group notifications, suppress delivery, change evaluation, or add
+public management HTTP endpoints. Runtime resolvers should consume
+`common_types::alert_management::{GroupingField, TagConfiguration, SilenceConfiguration}` and the
+`TagsInterface`, `TagMapperInterface`, and `SilencesInterface` seams rather than query Diesel rows.
+
+Apply migrations with the observability-specific configuration and directory (only against the
+intended observability database):
+
+```bash
+diesel migration run \
+  --config-file crates/observability/diesel.toml \
+  --migration-dir crates/observability/migrations \
+  --database-url "$OBSERVABILITY_DATABASE_URL"
+```
+
 ## Layout
 
 ```

@@ -89,6 +89,39 @@ diesel::table! {
 }
 
 diesel::table! {
+    alert_silences (id) {
+        id -> Uuid,
+        configuration -> Jsonb,
+        starts_at -> Timestamp,
+        ends_at -> Timestamp,
+        reason -> Text,
+        created_at -> Timestamp,
+        last_updated_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    alert_tag_mapper (alert_rule_id, tag_id) {
+        #[max_length = 64]
+        alert_rule_id -> Varchar,
+        tag_id -> Uuid,
+    }
+}
+
+diesel::table! {
+    alert_tags (id) {
+        id -> Uuid,
+        #[max_length = 64]
+        tag_key -> Varchar,
+        #[max_length = 255]
+        tag_value -> Varchar,
+        configuration -> Jsonb,
+        created_at -> Timestamp,
+        last_updated_at -> Timestamp,
+    }
+}
+
+diesel::table! {
     alerts_dicts (id) {
         id -> Uuid,
         #[max_length = 64]
@@ -380,6 +413,8 @@ diesel::table! {
     }
 }
 
+diesel::joinable!(alert_tag_mapper -> alert_rules (alert_rule_id));
+diesel::joinable!(alert_tag_mapper -> alert_tags (tag_id));
 diesel::joinable!(alerts_intermediate -> alerts_main (id));
 diesel::joinable!(alerts_intermediate_xyne -> alerts_main_xyne (id));
 diesel::joinable!(merchants_alert_external -> alerts_main (id));
@@ -394,6 +429,9 @@ diesel::allow_tables_to_appear_in_same_query!(
     alert_metadata,
     alert_rule_toggles,
     alert_rules,
+    alert_silences,
+    alert_tag_mapper,
+    alert_tags,
     alerts_dicts,
     alerts_info,
     alerts_intermediate,
