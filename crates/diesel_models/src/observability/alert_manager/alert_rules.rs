@@ -39,3 +39,11 @@ pub struct AlertRule {
     pub created_at: PrimitiveDateTime,
     pub last_updated_at: PrimitiveDateTime,
 }
+
+/// Result of reconciling classifications derived from a previously read rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReconcileInfraTagsOutcome {
+    Applied,
+    MissingRule,
+    StaleConfiguration,
+}

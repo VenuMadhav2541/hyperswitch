@@ -6,8 +6,8 @@ use crate::{
     db::StorageInterface,
     domain_models::{
         infra_tags::{
-            assignments_for_rule, predefined_catalogue, ExplicitAssignments, TagDescriptor,
-            SYSTEM_TAG_KEYS,
+            assignments_for_rule, predefined_catalogue, ExplicitAssignments,
+            ReconcileInfraTagsOutcome, TagDescriptor, SYSTEM_TAG_KEYS,
         },
         tags::CreateTagOutcome,
     },
@@ -28,6 +28,8 @@ pub struct ReconciliationChange {
     pub removals: Vec<(String, String)>,
     pub missing_service_namespace: Option<String>,
     pub applied: bool,
+    /// The rule changed after this page was read; rerunning previews/reconciles its current config.
+    pub stale: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -80,7 +82,7 @@ pub async fn bootstrap_catalogue(
             let value = descriptor.value.clone();
             let expected = descriptor.configuration.clone();
             match store
-                .create_tag(
+                .create_infra_tag(
                     descriptor
                         .into_new()
                         .map_err(ReconciliationError::InvalidAssignment)?,
@@ -103,6 +105,9 @@ pub async fn bootstrap_catalogue(
                     if !compatible {
                         return Err(ReconciliationError::CatalogueConflict { key, value });
                     }
+                }
+                CreateTagOutcome::SystemOwned => {
+                    return Err(ReconciliationError::CatalogueConflict { key, value });
                 }
             }
         }
@@ -157,20 +162,27 @@ pub async fn reconcile_batch(
         additions.sort();
         removals.sort();
 
-        let applied = if mode == ReconciliationMode::Apply {
-            store
-                .reconcile_infra_tags(&rule.id, assignments.clone())
-                .await
-                .map_err(|_| ReconciliationError::Storage)?
+        let outcome = if mode == ReconciliationMode::Apply {
+            Some(
+                store
+                    .reconcile_infra_tags(
+                        &rule.id,
+                        rule.alerts_configuration.clone(),
+                        assignments.clone(),
+                    )
+                    .await
+                    .map_err(|_| ReconciliationError::Storage)?,
+            )
         } else {
-            false
+            None
         };
         changes.push(ReconciliationChange {
             alert_rule_id: rule.id,
             additions,
             removals,
             missing_service_namespace: assignments.missing_service_namespace,
-            applied,
+            applied: outcome == Some(ReconcileInfraTagsOutcome::Applied),
+            stale: outcome == Some(ReconcileInfraTagsOutcome::StaleConfiguration),
         });
     }
     Ok(changes)

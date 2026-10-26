@@ -28,9 +28,10 @@ use observability::{
     db::{
         alert_rules::AlertRulesInterface, alerts_info::AlertsInfoInterface,
         blacklist::BlacklistInterface, dictionary::DictionaryInterface,
-        lifecycle_events::LifecycleEventsInterface, metadata::AlertMetadataInterface,
-        rule_toggles::RuleTogglesInterface, tag_mapper::TagMapperInterface, tags::TagsInterface,
-        thresholds::ThresholdsInterface, StorageInterface,
+        infra_tags::InfraTagsInterface, lifecycle_events::LifecycleEventsInterface,
+        metadata::AlertMetadataInterface, rule_toggles::RuleTogglesInterface,
+        tag_mapper::TagMapperInterface, tags::TagsInterface, thresholds::ThresholdsInterface,
+        StorageInterface,
     },
     domain::notifier::{
         chat::{
@@ -42,10 +43,16 @@ use observability::{
     domain_models::{
         alert_rules::{AlertRule, AlertRuleNew},
         alerts_info, blacklist, dictionary,
-        infra_tags::ExplicitAssignments,
+        infra_tags::{
+            assignments_for_rule, predefined_catalogue, ExplicitAssignments,
+            ReconcileInfraTagsOutcome,
+        },
         lifecycle_events, metadata, rule_toggles,
-        tag_mapper::AlertTagMapping,
-        tags::{AlertTagNew, CreateTagOutcome},
+        tag_mapper::{AlertTagMapping, AttachTagOutcome, DetachTagOutcome},
+        tags::{
+            AlertTagConfigurationUpdate, AlertTagNew, CreateTagOutcome, DeleteTagOutcome,
+            UpdateTagOutcome,
+        },
         thresholds,
     },
     errors::{ObservabilityApiResult, ObservabilityError},
@@ -582,6 +589,10 @@ async fn postgres_repository_stores_replaces_claims_and_deletes_rules() {
             .await
             .unwrap(),
     );
+    // A separate pool makes the stale-snapshot/config-edit interleaving use two PG connections.
+    let reconciler = observability::db::Store::new(&postgres_database(&database_url))
+        .await
+        .unwrap();
     let state = state_with(
         store.clone(),
         json!({ "datasources": { "grafana_cloudwatch": { "uid": "cloudwatch" } } }),
@@ -612,6 +623,69 @@ async fn postgres_repository_stores_replaces_claims_and_deletes_rules() {
         .iter()
         .any(|tag| tag.tag_key == "service" && tag.tag_value == "rds"));
 
+    let service_tag = tags.iter().find(|tag| tag.tag_key == "service").unwrap();
+    let classification_only =
+        serde_json::from_value(json!({"version":"v1", "grouping":{"group_by":[]}})).unwrap();
+    let grouping: common_types::alert_management::TagConfiguration =
+        serde_json::from_value(json!({"version":"v1", "grouping":{"group_by":["alert_rule_id"]}}))
+            .unwrap();
+    assert_eq!(
+        store
+            .create_tag(
+                AlertTagNew::try_new("service".to_owned(), "poison".to_owned(), grouping.clone())
+                    .unwrap()
+            )
+            .await
+            .unwrap(),
+        CreateTagOutcome::SystemOwned
+    );
+    let ec2_tag = match store
+        .create_infra_tag(
+            predefined_catalogue()
+                .into_iter()
+                .find(|tag| tag.key == "service" && tag.value == "ec2")
+                .unwrap()
+                .into_new()
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    {
+        CreateTagOutcome::Created(tag) => tag,
+        other => panic!("expected dedicated classification creation, got {other:?}"),
+    };
+    assert_eq!(
+        store
+            .attach_tag(AlertTagMapping::try_new("rds-writer-cpu".to_owned(), ec2_tag.id).unwrap())
+            .await
+            .unwrap(),
+        AttachTagOutcome::SystemOwned
+    );
+    assert_eq!(
+        store
+            .detach_tag(
+                AlertTagMapping::try_new("rds-writer-cpu".to_owned(), service_tag.id).unwrap()
+            )
+            .await
+            .unwrap(),
+        DetachTagOutcome::SystemOwned
+    );
+    assert_eq!(
+        store
+            .update_tag_configuration(
+                service_tag.id,
+                AlertTagConfigurationUpdate::try_new(grouping).unwrap()
+            )
+            .await
+            .unwrap(),
+        UpdateTagOutcome::SystemOwned
+    );
+    assert_eq!(
+        store.delete_tag(service_tag.id).await.unwrap(),
+        DeleteTagOutcome::SystemOwned
+    );
+    assert_eq!(service_tag.configuration, classification_only);
+
     let custom = AlertTagNew::try_new(
         "team".to_owned(),
         "platform".to_owned(),
@@ -630,6 +704,7 @@ async fn postgres_repository_stores_replaces_claims_and_deletes_rules() {
                 .unwrap()
                 .id
         }
+        CreateTagOutcome::SystemOwned => panic!("team is not a system-owned key"),
     };
     store
         .attach_tag(AlertTagMapping::try_new("rds-writer-cpu".to_owned(), custom_id).unwrap())
@@ -654,6 +729,18 @@ async fn postgres_repository_stores_replaces_claims_and_deletes_rules() {
         .iter()
         .any(|tag| tag.id == custom_id));
 
+    // Capture the exact typed RDS snapshot used to derive a reconciliation proposal.
+    let stale_rule = store
+        .find_alert_rule("rds-writer-cpu")
+        .await
+        .unwrap()
+        .unwrap();
+    let stale_assignments = assignments_for_rule(
+        &stale_rule.alerts_configuration,
+        ExplicitAssignments::default(),
+    )
+    .unwrap();
+
     // A namespace change removes the stale reserved service mapping in the same upsert.
     let ec2_rule = set(
         rule("RDS writer CPU, renamed"),
@@ -668,6 +755,17 @@ async fn postgres_repository_stores_replaces_claims_and_deletes_rules() {
         Some(ec2_rule),
     )
     .await;
+    assert_eq!(
+        reconciler
+            .reconcile_infra_tags(
+                "rds-writer-cpu",
+                stale_rule.alerts_configuration,
+                stale_assignments,
+            )
+            .await
+            .unwrap(),
+        ReconcileInfraTagsOutcome::StaleConfiguration
+    );
     let tags = store.list_rule_tags("rds-writer-cpu").await.unwrap();
     assert!(tags
         .iter()

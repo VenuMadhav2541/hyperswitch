@@ -55,12 +55,16 @@ pub fn matches_any_silence(
     context: &AlertContext,
     silences: &[AlertSilence],
 ) -> Result<bool, ContextResolutionError> {
+    let mut matched = false;
+    let mut first_error = None;
     for silence in silences {
-        if silence_matches(context, &silence.configuration)? {
-            return Ok(true);
+        match silence_matches(context, &silence.configuration) {
+            Ok(is_match) => matched |= is_match,
+            Err(error) if first_error.is_none() => first_error = Some(error),
+            Err(_) => {}
         }
     }
-    Ok(false)
+    first_error.map_or(Ok(matched), Err)
 }
 
 fn resolve_values<'a>(
@@ -102,6 +106,18 @@ mod tests {
             "version": "v1", "tag_ids": tag_ids, "group_values": values
         }))
         .unwrap()
+    }
+
+    fn stored_silence(id: &str, configuration: SilenceConfiguration) -> AlertSilence {
+        AlertSilence {
+            id: Uuid::parse_str(id).unwrap(),
+            configuration,
+            starts_at: datetime!(2026-10-25 00:00),
+            ends_at: datetime!(2026-10-26 00:00),
+            reason: "test".to_owned(),
+            created_at: datetime!(2026-10-25 00:00),
+            last_updated_at: datetime!(2026-10-25 00:00),
+        }
     }
 
     #[test]
@@ -185,5 +201,38 @@ mod tests {
         assert!(
             !silence_matches(&context(datetime!(2026-10-26 00:00:00)), &configuration).unwrap()
         );
+    }
+
+    #[test]
+    fn matching_silence_does_not_hide_resolution_errors_in_either_order() {
+        let context = context(datetime!(2026-10-25 10:00));
+        let matching = stored_silence(
+            "11111111-1111-4111-8111-111111111111",
+            silence(vec![], json!({"alert_rule_id":"infra-cpu"})),
+        );
+
+        for (id, field, expected) in [
+            (
+                "22222222-2222-4222-8222-222222222222",
+                GroupingField::OccurrenceId,
+                json!({"occurrence_id":"episode-1"}),
+            ),
+            (
+                "33333333-3333-4333-8333-333333333333",
+                GroupingField::Dimension("missing".to_owned()),
+                json!({"dimensions.missing":"value"}),
+            ),
+        ] {
+            let unresolved = stored_silence(id, silence(vec![], expected));
+            let error = Err(ContextResolutionError::MissingField(field));
+            assert_eq!(
+                matches_any_silence(&context, &[matching.clone(), unresolved.clone()]),
+                error.clone()
+            );
+            assert_eq!(
+                matches_any_silence(&context, &[unresolved, matching.clone()]),
+                error
+            );
+        }
     }
 }

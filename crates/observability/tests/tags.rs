@@ -82,7 +82,7 @@ async fn postgres_tags_enforce_identity_round_trip_updates_and_managed_deletion(
     );
 
     let live = match store
-        .create_tag(tag("service", "database", &[]))
+        .create_tag(tag("team", "database", &[]))
         .await
         .unwrap()
     {

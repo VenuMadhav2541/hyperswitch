@@ -21,6 +21,10 @@ impl AlertTagMapping {
             tag_id,
         })
     }
+
+    pub(crate) fn tag_id(&self) -> Uuid {
+        self.tag_id
+    }
 }
 
 /// Outcome of an atomic attach.
@@ -36,6 +40,8 @@ pub enum AttachTagOutcome {
     MissingTag,
     /// The rule already has another grouping-enabled tag.
     GroupingConflict { existing_tag_id: Uuid },
+    /// Reserved classifications can only be attached by infrastructure classification.
+    SystemOwned,
 }
 
 /// Outcome of an idempotent detach.
@@ -45,6 +51,8 @@ pub enum DetachTagOutcome {
     Detached,
     /// The mapping was absent.
     Absent,
+    /// Reserved classifications can only be detached by infrastructure classification.
+    SystemOwned,
 }
 
 impl From<AlertTagMapping> for storage::AlertTagMapping {

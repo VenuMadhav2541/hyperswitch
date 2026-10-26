@@ -119,7 +119,7 @@ async fn postgres_silences_validate_references_boundaries_hard_delete_and_concur
     assert!(!store.delete_silence(updated.id).await.unwrap());
 
     let race_tag = match store
-        .create_tag(tag("service", "payments", &[]))
+        .create_tag(tag("team", "payments", &[]))
         .await
         .unwrap()
     {
@@ -155,16 +155,12 @@ async fn postgres_silences_validate_references_boundaries_hard_delete_and_concur
         assert!(store.find_tag(race_tag.id).await.unwrap().is_some());
     }
 
-    let source_tag = match store
-        .create_tag(tag("service", "source", &[]))
-        .await
-        .unwrap()
-    {
+    let source_tag = match store.create_tag(tag("team", "source", &[])).await.unwrap() {
         CreateTagOutcome::Created(tag) => tag,
         other => panic!("expected created tag, got {other:?}"),
     };
     let update_tag = match store
-        .create_tag(tag("service", "update-target", &[]))
+        .create_tag(tag("team", "update-target", &[]))
         .await
         .unwrap()
     {

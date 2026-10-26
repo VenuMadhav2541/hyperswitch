@@ -43,6 +43,10 @@ impl AlertTagNew {
             configuration,
         })
     }
+
+    pub(crate) fn is_system_owned(&self) -> bool {
+        super::infra_tags::SYSTEM_TAG_KEYS.contains(&self.tag_key.as_str())
+    }
 }
 
 /// A validated configuration-only tag edit.
@@ -66,6 +70,8 @@ pub enum CreateTagOutcome {
     Created(AlertTag),
     /// The normalized key/value pair already exists.
     AlreadyExists,
+    /// Reserved classification keys can only be created by infrastructure bootstrap/classification.
+    SystemOwned,
 }
 
 /// Outcome of changing tag grouping behavior.
@@ -77,6 +83,8 @@ pub enum UpdateTagOutcome {
     NotFound,
     /// A mapped rule would have multiple grouping-enabled tags.
     GroupingConflict { alert_rule_id: String },
+    /// Reserved classification configuration is managed by infrastructure classification.
+    SystemOwned,
 }
 
 /// Outcome of managed hard deletion.
@@ -88,6 +96,8 @@ pub enum DeleteTagOutcome {
     NotFound,
     /// A mapping or live/future silence still references the tag.
     InUse,
+    /// Reserved classification rows are managed by infrastructure classification.
+    SystemOwned,
 }
 
 pub(crate) fn validate_rule_id(value: &str) -> Result<(), String> {

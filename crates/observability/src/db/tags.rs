@@ -3,7 +3,10 @@
 use diesel_models::{observability::alert_manager::tags as storage, StorageResult};
 use uuid::Uuid;
 
-use crate::{db::Store, domain_models::tags as domain};
+use crate::{
+    db::Store,
+    domain_models::{infra_tags::SYSTEM_TAG_KEYS, tags as domain},
+};
 
 /// Alert tag persistence seam.
 #[async_trait::async_trait]
@@ -31,6 +34,9 @@ impl TagsInterface for Store {
         &self,
         new: domain::AlertTagNew,
     ) -> StorageResult<domain::CreateTagOutcome> {
+        if new.is_system_owned() {
+            return Ok(domain::CreateTagOutcome::SystemOwned);
+        }
         storage::AlertTagNew::from(new)
             .create(&self.connection().await?)
             .await
@@ -54,13 +60,27 @@ impl TagsInterface for Store {
         id: Uuid,
         update: domain::AlertTagConfigurationUpdate,
     ) -> StorageResult<domain::UpdateTagOutcome> {
-        storage::AlertTag::update_configuration(&self.connection().await?, id, update.into())
+        let connection = self.connection().await?;
+        if storage::AlertTag::find(&connection, id)
+            .await?
+            .is_some_and(|tag| SYSTEM_TAG_KEYS.contains(&tag.tag_key.as_str()))
+        {
+            return Ok(domain::UpdateTagOutcome::SystemOwned);
+        }
+        storage::AlertTag::update_configuration(&connection, id, update.into())
             .await
             .map(Into::into)
     }
 
     async fn delete_tag(&self, id: Uuid) -> StorageResult<domain::DeleteTagOutcome> {
-        storage::AlertTag::delete_managed(&self.connection().await?, id)
+        let connection = self.connection().await?;
+        if storage::AlertTag::find(&connection, id)
+            .await?
+            .is_some_and(|tag| SYSTEM_TAG_KEYS.contains(&tag.tag_key.as_str()))
+        {
+            return Ok(domain::DeleteTagOutcome::SystemOwned);
+        }
+        storage::AlertTag::delete_managed(&connection, id)
             .await
             .map(Into::into)
     }

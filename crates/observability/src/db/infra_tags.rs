@@ -9,7 +9,8 @@ use crate::{
     db::Store,
     domain_models::{
         alert_rules::AlertRule,
-        infra_tags::{InfraTagAssignments, SYSTEM_TAG_KEYS},
+        infra_tags::{InfraTagAssignments, ReconcileInfraTagsOutcome, SYSTEM_TAG_KEYS},
+        tags::{AlertTagNew, CreateTagOutcome},
     },
 };
 
@@ -22,12 +23,16 @@ pub trait InfraTagsInterface {
         limit: i64,
     ) -> StorageResult<Vec<AlertRule>>;
 
-    /// Reconcile one existing rule atomically. `false` means it disappeared before locking.
+    /// Create one system catalogue row through the dedicated bootstrap path.
+    async fn create_infra_tag(&self, new: AlertTagNew) -> StorageResult<CreateTagOutcome>;
+
+    /// Reconcile one existing rule atomically against the configuration used to derive assignments.
     async fn reconcile_infra_tags(
         &self,
         alert_rule_id: &str,
+        expected_configuration: common_types::alert_rules::stored::AlertConfiguration,
         assignments: InfraTagAssignments,
-    ) -> StorageResult<bool>;
+    ) -> StorageResult<ReconcileInfraTagsOutcome>;
 }
 
 #[async_trait::async_trait]
@@ -42,11 +47,19 @@ impl InfraTagsInterface for Store {
             .map(|rules| rules.into_iter().map(AlertRule::from).collect())
     }
 
+    async fn create_infra_tag(&self, new: AlertTagNew) -> StorageResult<CreateTagOutcome> {
+        diesel_models::observability::alert_manager::tags::AlertTagNew::from(new)
+            .create(&self.connection().await?)
+            .await
+            .map(Into::into)
+    }
+
     async fn reconcile_infra_tags(
         &self,
         alert_rule_id: &str,
+        expected_configuration: common_types::alert_rules::stored::AlertConfiguration,
         assignments: InfraTagAssignments,
-    ) -> StorageResult<bool> {
+    ) -> StorageResult<ReconcileInfraTagsOutcome> {
         let system = assignments
             .system
             .into_iter()
@@ -62,10 +75,12 @@ impl InfraTagsInterface for Store {
         storage::AlertRule::reconcile_infra_tags(
             &self.connection().await?,
             alert_rule_id.to_owned(),
+            expected_configuration,
             SYSTEM_TAG_KEYS.iter().map(ToString::to_string).collect(),
             system,
             explicit,
         )
         .await
+        .map(Into::into)
     }
 }

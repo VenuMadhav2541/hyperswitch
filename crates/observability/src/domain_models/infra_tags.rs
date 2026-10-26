@@ -98,6 +98,29 @@ pub struct InfraTagAssignments {
     pub missing_service_namespace: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReconcileInfraTagsOutcome {
+    Applied,
+    MissingRule,
+    StaleConfiguration,
+}
+
+impl From<diesel_models::observability::alert_manager::alert_rules::ReconcileInfraTagsOutcome>
+    for ReconcileInfraTagsOutcome
+{
+    fn from(
+        outcome: diesel_models::observability::alert_manager::alert_rules::ReconcileInfraTagsOutcome,
+    ) -> Self {
+        use diesel_models::observability::alert_manager::alert_rules::ReconcileInfraTagsOutcome as StorageOutcome;
+
+        match outcome {
+            StorageOutcome::Applied => Self::Applied,
+            StorageOutcome::MissingRule => Self::MissingRule,
+            StorageOutcome::StaleConfiguration => Self::StaleConfiguration,
+        }
+    }
+}
+
 /// Classify a typed stored rule and add only explicitly supplied component/team metadata.
 pub fn assignments_for_rule(
     configuration: &AlertConfiguration,

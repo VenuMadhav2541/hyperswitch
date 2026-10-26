@@ -82,11 +82,22 @@ macro_rules! impl_unimplemented_alert_management_interfaces {
                     diesel_models::errors::DatabaseError::Others
                 ))
             }
+            async fn create_infra_tag(
+                &self,
+                _new: $crate::domain_models::tags::AlertTagNew,
+            ) -> diesel_models::StorageResult<$crate::domain_models::tags::CreateTagOutcome> {
+                Err(error_stack::report!(
+                    diesel_models::errors::DatabaseError::Others
+                ))
+            }
             async fn reconcile_infra_tags(
                 &self,
                 _alert_rule_id: &str,
+                _expected_configuration: common_types::alert_rules::stored::AlertConfiguration,
                 _assignments: $crate::domain_models::infra_tags::InfraTagAssignments,
-            ) -> diesel_models::StorageResult<bool> {
+            ) -> diesel_models::StorageResult<
+                $crate::domain_models::infra_tags::ReconcileInfraTagsOutcome,
+            > {
                 Err(error_stack::report!(
                     diesel_models::errors::DatabaseError::Others
                 ))

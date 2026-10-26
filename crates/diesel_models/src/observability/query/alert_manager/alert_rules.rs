@@ -1,5 +1,5 @@
 use async_bb8_diesel::{AsyncConnection, AsyncRunQueryDsl};
-use common_types::alert_rules::stored::AlertRuleStatus;
+use common_types::alert_rules::stored::{AlertConfiguration, AlertRuleStatus};
 use diesel::prelude::*;
 use error_stack::report;
 use time::PrimitiveDateTime;
@@ -8,7 +8,7 @@ use crate::{
     errors::DatabaseError,
     observability::{
         alert_manager::{
-            alert_rules::{AlertRule, AlertRuleNew},
+            alert_rules::{AlertRule, AlertRuleNew, ReconcileInfraTagsOutcome},
             tags::{AlertTag, AlertTagNew},
         },
         schema::{
@@ -47,30 +47,34 @@ impl AlertRule {
             .map_err(|error| report!(error).change_context(DatabaseError::Others))
     }
 
-    /// Reconcile only reserved system mappings for an existing rule.
+    /// Reconcile only reserved system mappings when the locked rule still has the expected config.
     pub async fn reconcile_infra_tags(
         conn: &DatabaseConnectionWithContext<'_>,
         id: String,
+        expected_configuration: AlertConfiguration,
         system_keys: Vec<String>,
         system_tags: Vec<AlertTagNew>,
         explicit_tags: Vec<AlertTagNew>,
-    ) -> StorageResult<bool> {
+    ) -> StorageResult<ReconcileInfraTagsOutcome> {
         conn.raw_connection()
             .transaction_async(move |connection| async move {
                 let tag_ids =
                     prepare_tags(&connection, &system_keys, system_tags, explicit_tags).await?;
-                let rule = dsl::alert_rules
+                let configuration = dsl::alert_rules
                     .find(id.clone())
-                    .select(dsl::id)
+                    .select(dsl::alerts_configuration)
                     .for_update()
-                    .first_async::<String>(&connection)
+                    .first_async::<AlertConfiguration>(&connection)
                     .await
                     .optional()?;
-                if rule.is_none() {
-                    return Ok(false);
+                let Some(configuration) = configuration else {
+                    return Ok(ReconcileInfraTagsOutcome::MissingRule);
+                };
+                if configuration != expected_configuration {
+                    return Ok(ReconcileInfraTagsOutcome::StaleConfiguration);
                 }
                 replace_system_mappings(&connection, &id, &system_keys, &tag_ids).await?;
-                Ok(true)
+                Ok(ReconcileInfraTagsOutcome::Applied)
             })
             .await
             .map_err(|error: diesel::result::Error| {

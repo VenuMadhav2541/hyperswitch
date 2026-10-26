@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     db::Store,
-    domain_models::{tag_mapper as domain, tags::AlertTag},
+    domain_models::{infra_tags::SYSTEM_TAG_KEYS, tag_mapper as domain, tags::AlertTag},
 };
 
 /// Rule/tag membership persistence seam.
@@ -33,8 +33,18 @@ impl TagMapperInterface for Store {
         &self,
         mapping: domain::AlertTagMapping,
     ) -> StorageResult<domain::AttachTagOutcome> {
+        let connection = self.connection().await?;
+        if diesel_models::observability::alert_manager::tags::AlertTag::find(
+            &connection,
+            mapping.tag_id(),
+        )
+        .await?
+        .is_some_and(|tag| SYSTEM_TAG_KEYS.contains(&tag.tag_key.as_str()))
+        {
+            return Ok(domain::AttachTagOutcome::SystemOwned);
+        }
         storage::AlertTagMapping::from(mapping)
-            .attach(&self.connection().await?)
+            .attach(&connection)
             .await
             .map(Into::into)
     }
@@ -43,8 +53,18 @@ impl TagMapperInterface for Store {
         &self,
         mapping: domain::AlertTagMapping,
     ) -> StorageResult<domain::DetachTagOutcome> {
+        let connection = self.connection().await?;
+        if diesel_models::observability::alert_manager::tags::AlertTag::find(
+            &connection,
+            mapping.tag_id(),
+        )
+        .await?
+        .is_some_and(|tag| SYSTEM_TAG_KEYS.contains(&tag.tag_key.as_str()))
+        {
+            return Ok(domain::DetachTagOutcome::SystemOwned);
+        }
         storage::AlertTagMapping::from(mapping)
-            .detach(&self.connection().await?)
+            .detach(&connection)
             .await
             .map(Into::into)
     }
