@@ -17,7 +17,7 @@ use crate::{
     errors::types::{ApiError, ApiErrorResponse},
     logger,
     routes::{
-        alerts_info, blacklist, dictionary, evaluator, health_check, lifecycle_events, metadata,
+        alert_rules, alerts_info, blacklist, dictionary, evaluator, health_check, lifecycle_events, metadata,
         notify, rule_toggles, thresholds,
     },
     state::AppState,
@@ -60,6 +60,16 @@ impl Alerts {
                 web::scope("/grafana/cloudwatch")
                     .service(web::resource("/notify").route(web::post().to(evaluator::notify)))
                     .service(web::resource("/evaluate").route(web::get().to(evaluator::evaluate))),
+            )
+            .service(web::resource("/rules").route(web::get().to(alert_rules::list)))
+            .service(web::resource("/rules/{id}")
+                .route(web::get().to(alert_rules::get))
+                .route(web::put().to(alert_rules::upsert))
+                .route(web::delete().to(alert_rules::delete)))
+            .service(web::resource("/grafana/loki/notify").route(web::post().to(evaluator::notify_loki)))
+            .service(
+                web::resource("/grafana/loki/evaluate")
+                    .route(web::get().to(evaluator::evaluate_loki)),
             )
             .service(
                 web::resource("/blacklist")

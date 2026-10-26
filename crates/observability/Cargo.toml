@@ -61,6 +61,7 @@ router_env = { version = "0.1.0", path = "../router_env", default-features = fal
 workspace = true
 
 [dev-dependencies]
+wiremock = "0.6.3"
 diesel = { version = "2.2.10", features = ["postgres", "time"] }
 time = { version = "0.3.41", features = ["macros", "std"] }
 url = "2.5.4"

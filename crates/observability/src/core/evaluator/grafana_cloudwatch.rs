@@ -1,126 +1,159 @@
-use common_types::alert_rules::{AlertThresholds, GrafanaCloudwatchQuery};
+use common_types::alert_rules::AlertQuery;
 use common_utils::date_time::convert_to_pdt;
 use error_stack::{Report, ResultExt};
 use external_services::metrics_provider::{
-    grafana::cloudwatch::CloudwatchMetricsQuery, MetricRange, MetricSeries, MetricsError,
-    MetricsProvider,
+    grafana::cloudwatch::GrafanaCloudwatch, MetricRange, MetricSeries, MetricsProvider,
 };
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
+use super::AlertEvaluator;
 use crate::domain_models::evaluator::{
-    AlertEvaluationLevel, Evaluation, EvaluatorError, EvaluatorResult,
+    AlertEvaluationLevel, Evaluation, EvaluatorError, EvaluatorResult, RuleDefinition,
 };
 
 const LOOKBACK_SECONDS: u32 = 300;
 
-pub async fn evaluate<P>(
-    provider: &P,
-    metrics_query: CloudwatchMetricsQuery,
-    query: &GrafanaCloudwatchQuery,
-    thresholds: &AlertThresholds,
-    now: PrimitiveDateTime,
-) -> EvaluatorResult<Evaluation>
-where
-    P: MetricsProvider<MetricsQuery = CloudwatchMetricsQuery, MetricsError = MetricsError>,
-{
-    let period = i64::from(query.period);
-    let seconds = now.assume_utc().unix_timestamp()
-        - i64::from(query.end_offset_seconds.saturating_sub(query.period));
-    let end_seconds = seconds
-        .checked_div_euclid(period)
-        .map(|bucket| bucket * period)
-        .ok_or(EvaluatorError::InvalidTimeRange)
-        .attach_printable("evaluation period must be greater than zero")?;
-    let to = OffsetDateTime::from_unix_timestamp(end_seconds)
-        .map(convert_to_pdt)
-        .change_context(EvaluatorError::InvalidTimeRange)?;
-    let (from, last) = to
-        .checked_sub(Duration::seconds(i64::from(LOOKBACK_SECONDS).max(period)))
-        .zip(to.checked_sub(Duration::seconds(period)))
-        .ok_or(EvaluatorError::InvalidTimeRange)
-        .attach_printable("query evaluation time range is outside supported bounds")?;
-    let window = MetricRange { from, to };
-    let request = P::build_request(metrics_query, window)
-        .change_context(EvaluatorError::DatasourceRequestFailed)?;
-    let series = provider
-        .fetch_metrics(request)
-        .await
-        .change_context(EvaluatorError::DatasourceRequestFailed)?;
-    evaluate_series(series, thresholds, window, last)
-}
+impl AlertEvaluator for GrafanaCloudwatch {
+    type Evaluation = Evaluation;
 
-fn evaluate_series(
-    series: Vec<MetricSeries>,
-    thresholds: &AlertThresholds,
-    window: MetricRange,
-    last: PrimitiveDateTime,
-) -> EvaluatorResult<Evaluation> {
-    if series.len() > 1 {
-        return Err(
-            Report::new(EvaluatorError::UnexpectedResponse).attach_printable(format!(
-                "query returned {} series; expected at most 1",
-                series.len()
-            )),
-        );
+    fn prepare_request(
+        &self,
+        rule: &RuleDefinition,
+        datasource_uid: &str,
+        now: PrimitiveDateTime,
+    ) -> EvaluatorResult<(MetricRange, Self::MetricsRequest)> {
+        let AlertQuery::GrafanaCloudwatch(query) = &rule.config.query else {
+            return Err(Report::new(EvaluatorError::UnexpectedResponse));
+        };
+        let period = i64::from(query.period);
+        let seconds = now.assume_utc().unix_timestamp()
+            - i64::from(query.end_offset_seconds.saturating_sub(query.period));
+        let end_seconds = seconds
+            .checked_div_euclid(period)
+            .map(|bucket| bucket * period)
+            .ok_or(EvaluatorError::InvalidTimeRange)
+            .attach_printable("evaluation period must be greater than zero")?;
+        let to = OffsetDateTime::from_unix_timestamp(end_seconds)
+            .map(convert_to_pdt)
+            .change_context(EvaluatorError::InvalidTimeRange)?;
+        let from = to
+            .checked_sub(Duration::seconds(i64::from(LOOKBACK_SECONDS).max(period)))
+            .ok_or(EvaluatorError::InvalidTimeRange)
+            .attach_printable("query evaluation time range is outside supported bounds")?;
+        let window = MetricRange { from, to };
+        let request = Self::build_request(rule.metrics_query(datasource_uid)?, window);
+        Ok((window, request))
     }
-    let points = series
-        .into_iter()
-        .next()
-        .map(|series| series.points)
-        .unwrap_or_default();
-    let latest = points
-        .iter()
-        .filter(|point| (window.from..=last).contains(&point.timestamp))
-        .max_by_key(|point| point.timestamp)
-        .cloned();
-    let Some(latest) = latest else {
-        return Ok(Evaluation {
-            level: AlertEvaluationLevel::NoData,
-            latest_point: None,
+
+    fn evaluate(
+        &self,
+        rule: &RuleDefinition,
+        window: MetricRange,
+        series: Vec<MetricSeries>,
+    ) -> EvaluatorResult<Evaluation> {
+        let AlertQuery::GrafanaCloudwatch(query) = &rule.config.query else {
+            return Err(Report::new(EvaluatorError::UnexpectedResponse));
+        };
+        let last = window
+            .to
+            .checked_sub(Duration::seconds(i64::from(query.period)))
+            .filter(|_| query.period != 0)
+            .ok_or(EvaluatorError::InvalidTimeRange)?;
+        let thresholds = &rule.config.thresholds;
+        if series.len() > 1 {
+            return Err(
+                Report::new(EvaluatorError::UnexpectedResponse).attach_printable(format!(
+                    "query returned {} series; expected at most 1",
+                    series.len()
+                )),
+            );
+        }
+        let points = series
+            .into_iter()
+            .next()
+            .map(|series| series.points)
+            .unwrap_or_default();
+        let latest = points
+            .iter()
+            .filter(|point| (window.from..=last).contains(&point.timestamp))
+            .max_by_key(|point| point.timestamp)
+            .cloned();
+        let Some(latest) = latest else {
+            return Ok(Evaluation {
+                level: AlertEvaluationLevel::NoData,
+                latest_point: None,
+                datapoints: points,
+                breach: None,
+                window,
+            });
+        };
+        if points
+            .iter()
+            .any(|point| point.timestamp == latest.timestamp && point.value != latest.value)
+        {
+            return Err(Report::new(EvaluatorError::UnexpectedResponse)
+                .attach_printable("query returned conflicting values for the current timestamp"));
+        }
+        for (&severity, threshold) in &thresholds.severities {
+            if threshold
+                .comparison_operator
+                .breaches(latest.value, threshold.threshold)
+            {
+                return Ok(Evaluation {
+                    level: severity.into(),
+                    latest_point: Some(latest),
+                    datapoints: points,
+                    breach: Some(threshold.clone()),
+                    window,
+                });
+            }
+        }
+        Ok(Evaluation {
+            level: AlertEvaluationLevel::Normal,
+            latest_point: Some(latest),
             datapoints: points,
             breach: None,
             window,
-        });
-    };
-    if points
-        .iter()
-        .any(|point| point.timestamp == latest.timestamp && point.value != latest.value)
-    {
-        return Err(Report::new(EvaluatorError::UnexpectedResponse)
-            .attach_printable("query returned conflicting values for the current timestamp"));
+        })
     }
-    for (&severity, threshold) in &thresholds.severities {
-        if threshold
-            .comparison_operator
-            .breaches(latest.value, threshold.threshold)
-        {
-            return Ok(Evaluation {
-                level: severity.into(),
-                latest_point: Some(latest),
-                datapoints: points,
-                breach: Some(threshold.clone()),
-                window,
-            });
-        }
-    }
-    Ok(Evaluation {
-        level: AlertEvaluationLevel::Normal,
-        latest_point: Some(latest),
-        datapoints: points,
-        breach: None,
-        window,
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
-    use common_types::alert_rules::{ComparisonOperator, Severity, SeverityThreshold};
+    use common_types::alert_rules::{
+        AlertThresholds, ComparisonOperator, Severity, SeverityThreshold,
+    };
+    use external_services::metrics_provider::grafana::GrafanaConfig;
     use external_services::metrics_provider::MetricPoint;
     use time::macros::datetime;
 
     use super::*;
+
+    fn evaluate_series(
+        series: Vec<MetricSeries>,
+        thresholds: &AlertThresholds,
+        window: MetricRange,
+        last: PrimitiveDateTime,
+    ) -> EvaluatorResult<Evaluation> {
+        assert_eq!(last, window.to - Duration::seconds(60));
+        let rule: RuleDefinition = serde_json::from_value(serde_json::json!({
+            "id": "comparison", "name": "Comparison",
+            "config": {
+                "interval_seconds": 60,
+                "query": {
+                    "datasource": "grafana_cloudwatch", "region": "ap-south-2",
+                    "namespace": "AWS/ApplicationELB", "metric_name": "RequestCount",
+                    "statistic": "Sum", "period": 60
+                },
+                "thresholds": thresholds
+            }
+        }))
+        .unwrap();
+        let operation = GrafanaCloudwatch::new(GrafanaConfig::default(), Default::default());
+        operation.evaluate(&rule, window, series)
+    }
 
     fn thresholds(entries: &[(Severity, f64, ComparisonOperator)]) -> AlertThresholds {
         AlertThresholds {
@@ -149,6 +182,7 @@ mod tests {
         };
         let result = evaluate_series(
             vec![MetricSeries {
+                labels: BTreeMap::new(),
                 points: vec![
                     MetricPoint {
                         timestamp: datetime!(2026-03-18 10:05:00),
@@ -214,6 +248,7 @@ mod tests {
         assert_eq!(
             evaluate_series(
                 vec![MetricSeries {
+                    labels: BTreeMap::new(),
                     points: vec![MetricPoint {
                         timestamp: datetime!(2026-03-18 10:05:00),
                         value: 10.0
@@ -252,6 +287,7 @@ mod tests {
         ];
         let no_data = evaluate_series(
             vec![MetricSeries {
+                labels: BTreeMap::new(),
                 points: points.clone(),
             }],
             &configured,
@@ -276,6 +312,7 @@ mod tests {
         points.push(selected.clone());
         let normal = evaluate_series(
             vec![MetricSeries {
+                labels: BTreeMap::new(),
                 points: points.clone(),
             }],
             &configured,
@@ -300,8 +337,14 @@ mod tests {
         };
         assert!(evaluate_series(
             vec![
-                MetricSeries { points: vec![] },
-                MetricSeries { points: vec![] }
+                MetricSeries {
+                    labels: BTreeMap::new(),
+                    points: vec![]
+                },
+                MetricSeries {
+                    labels: BTreeMap::new(),
+                    points: vec![]
+                }
             ],
             &configured,
             window,
@@ -310,6 +353,7 @@ mod tests {
         .is_err());
         assert!(evaluate_series(
             vec![MetricSeries {
+                labels: BTreeMap::new(),
                 points: vec![
                     MetricPoint {
                         timestamp: datetime!(2026-03-18 10:05:00),

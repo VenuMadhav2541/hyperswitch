@@ -19,15 +19,18 @@ use actix_web::{
     test::{self, TestRequest},
     App,
 };
-use common_types::alert_rules::AlertQuery;
 use error_stack::report;
 use external_services::{
     email::no_email::NoEmailClient,
-    metrics_provider::grafana::{cloudwatch::GrafanaCloudwatch, GrafanaConfig},
+    metrics_provider::{
+        grafana::{cloudwatch::GrafanaCloudwatch, GrafanaConfig},
+        MetricsProvider,
+    },
 };
 use hyperswitch_masking::{PeekInterface, Secret};
 use observability::{
     auth::X_INTERNAL_API_KEY,
+    core::evaluator::AlertEvaluator,
     db::Store,
     domain::notifier::{
         chat::{
@@ -456,6 +459,7 @@ fn evaluator_uses_complete_windows_and_rejects_invalid_time_ranges() {
             GrafanaConfig {
                 base_url,
                 api_token: Secret::new("test-token".to_owned()),
+                ..Default::default()
             },
             Default::default(),
         );
@@ -464,16 +468,9 @@ fn evaluator_uses_complete_windows_and_rejects_invalid_time_ranges() {
             config["config"]["query"]["period"] = json!(period);
             config["config"]["query"]["end_offset_seconds"] = json!(offset);
             let rule: RuleDefinition = serde_json::from_value(config).unwrap();
-            let AlertQuery::GrafanaCloudwatch(query) = &rule.config.query;
-            let result = observability::core::evaluator::cloudwatch::evaluate(
-                &provider,
-                rule.metrics_query("cloudwatch"),
-                query,
-                &rule.config.thresholds,
-                now,
-            )
-            .await
-            .unwrap();
+            let (range, request) = provider.prepare_request(&rule, "cloudwatch", now).unwrap();
+            let series = provider.fetch_metrics(request).await.unwrap();
+            let result = provider.evaluate(&rule, range, series).unwrap();
             assert_eq!(result.window.from, from);
             assert_eq!(result.window.to, to);
             assert_eq!(
@@ -508,16 +505,9 @@ fn evaluator_uses_complete_windows_and_rejects_invalid_time_ranges() {
             config["config"]["query"]["period"] = json!(period);
             config["config"]["query"]["end_offset_seconds"] = json!(offset);
             let rule: RuleDefinition = serde_json::from_value(config).unwrap();
-            let AlertQuery::GrafanaCloudwatch(query) = &rule.config.query;
-            let error = observability::core::evaluator::cloudwatch::evaluate(
-                &provider,
-                rule.metrics_query("cloudwatch"),
-                query,
-                &rule.config.thresholds,
-                now,
-            )
-            .await
-            .unwrap_err();
+            let error = provider
+                .prepare_request(&rule, "cloudwatch", now)
+                .unwrap_err();
             assert!(matches!(
                 error.current_context(),
                 EvaluatorError::InvalidTimeRange

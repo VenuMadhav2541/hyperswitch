@@ -1,0 +1,51 @@
+# Local application, sandbox source. This is a preview fixture, not a migrated Grafana rule.
+# Set OBSERVABILITY__ALERT__GRAFANA__API_TOKEN through the private local environment.
+[server]
+host = "127.0.0.1"
+port = 8086
+workers = 1
+
+[auth]
+internal_api_key = "local_loki_development_only"
+
+[secrets_management]
+secrets_manager = "no_encryption"
+
+[log.console]
+enabled = true
+level = "INFO"
+log_format = "default"
+
+[log.file]
+enabled = false
+
+[log.telemetry]
+traces_enabled = false
+metrics_enabled = false
+
+# Preview and existing notifier calls do not use the database. No idle connection is opened.
+# This does not provide persisted evaluator lifecycle state.
+[database]
+username = "unused"
+password = "unused"
+host = "127.0.0.1"
+port = 5432
+dbname = "unused"
+min_idle_pool_size = 0
+
+[chat.destinations.smoke]
+type = "log"
+
+[email]
+active_email_client = "NO_EMAIL_CLIENT"
+
+[alert]
+rules = '''[{"id":"sandbox-http-errors-preview","name":"Sandbox HTTP error snapshot","config":{"interval_seconds":60,"query":{"datasource":"grafana_loki","expression":"sum by (app, request_method, extra_status_code) (count_over_time({app=\"sbx-hyperswitch-server\"} |= `EndRequest` | json | extra_status_code =~ `5..` | __error__ = `` [$__range]))","mode":"instant","range_seconds":300,"reducer":"last"},"thresholds":{"severities":{"critical":{"threshold":0,"comparison_operator":"GreaterThanThreshold","description":"Sandbox snapshot only, not a production alarm","destination":"smoke"}}}}}]'''
+
+[alert.grafana]
+base_url = "https://grafana.internal.staging.in2.hyperswitch.net"
+api_token = ""
+auth_type = "bearer"
+
+[alert.datasources.grafana_loki]
+uid = "loki"

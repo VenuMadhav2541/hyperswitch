@@ -5,9 +5,10 @@ use error_stack::{Report, ResultExt};
 use hyperswitch_interfaces::types::Proxy;
 use hyperswitch_masking::PeekInterface;
 use serde::{Deserialize, Serialize};
-use time::{OffsetDateTime, PrimitiveDateTime};
+use time::OffsetDateTime;
 
 use super::{GrafanaClient, GrafanaConfig};
+pub use crate::metrics_provider::{MetricPoint, MetricRange, MetricSeries};
 use crate::metrics_provider::{MetricsError, MetricsProvider, MetricsResult};
 
 const QUERY_REF_ID: &str = "A";
@@ -58,53 +59,8 @@ impl MetricsProvider for GrafanaCloudwatch {
     type MetricsResponse = GrafanaMetricsResponse;
     type MetricsError = MetricsError;
 
-    fn validate_query(query: &Self::MetricsQuery) -> MetricsResult<()> {
-        for (field, value) in [
-            ("datasource_uid", query.datasource_uid.as_str()),
-            ("region", query.region.as_str()),
-            ("namespace", query.namespace.as_str()),
-            ("metric_name", query.metric_name.as_str()),
-        ] {
-            if value.trim().is_empty() {
-                return Err(Report::new(MetricsError::InvalidQuery {
-                    field,
-                    requirement: "must not be blank",
-                }));
-            }
-        }
-        if query.dimensions.len() > 30 {
-            return Err(Report::new(MetricsError::InvalidQuery {
-                field: "dimensions",
-                requirement: "must contain at most 30 entries",
-            }));
-        }
-        if query
-            .dimensions
-            .iter()
-            .any(|(name, value)| name.trim().is_empty() || value.trim().is_empty())
-        {
-            return Err(Report::new(MetricsError::InvalidQuery {
-                field: "dimensions",
-                requirement: "names and values must not be blank",
-            }));
-        }
-        let supported_period = matches!(query.period, 1 | 5 | 10 | 20 | 30)
-            || ((60..=86_400).contains(&query.period) && query.period % 60 == 0);
-        if !supported_period {
-            return Err(Report::new(MetricsError::InvalidQuery {
-                field: "period",
-                requirement: "must be 1, 5, 10, 20, 30, or a multiple of 60 up to 86400 seconds",
-            }));
-        }
-        Ok(())
-    }
-
-    fn build_request(
-        query: Self::MetricsQuery,
-        range: MetricRange,
-    ) -> MetricsResult<Self::MetricsRequest> {
-        Self::validate_query(&query)?;
-        Ok(CloudwatchMetricsRequest {
+    fn build_request(query: Self::MetricsQuery, range: MetricRange) -> Self::MetricsRequest {
+        CloudwatchMetricsRequest {
             from: (range.from.assume_utc().unix_timestamp_nanos() / 1_000_000).to_string(),
             to: (range.to.assume_utc().unix_timestamp_nanos() / 1_000_000).to_string(),
             queries: [GrafanaCloudwatchQuery {
@@ -130,7 +86,7 @@ impl MetricsProvider for GrafanaCloudwatch {
                 id: "",
                 expression: "",
             }],
-        })
+        }
     }
 
     fn handle_response(
@@ -216,23 +172,6 @@ struct GrafanaDatasource {
     uid: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MetricRange {
-    pub from: PrimitiveDateTime,
-    pub to: PrimitiveDateTime,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MetricSeries {
-    pub points: Vec<MetricPoint>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MetricPoint {
-    pub timestamp: PrimitiveDateTime,
-    pub value: f64,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct GrafanaMetricsResponse {
     results: Option<HashMap<String, QueryResult>>,
@@ -270,7 +209,12 @@ fn parse_frame(frame: Frame) -> MetricsResult<MetricSeries> {
         .ok_or(MetricsError::MalformedResponse)
         .attach_printable("frame data is missing values")?;
     let (timestamps, metric_values) = match values {
-        FrameValues::Empty([]) => return Ok(MetricSeries { points: Vec::new() }),
+        FrameValues::Empty([]) => {
+            return Ok(MetricSeries {
+                labels: BTreeMap::new(),
+                points: Vec::new(),
+            })
+        }
         FrameValues::Series(series) => series,
     };
     if timestamps.len() != metric_values.len() {
@@ -305,7 +249,10 @@ fn parse_frame(frame: Frame) -> MetricsResult<MetricSeries> {
         })
         .filter_map(Result::transpose)
         .collect::<MetricsResult<Vec<_>>>()?;
-    Ok(MetricSeries { points })
+    Ok(MetricSeries {
+        labels: BTreeMap::new(),
+        points,
+    })
 }
 
 #[cfg(test)]
@@ -349,6 +296,7 @@ mod tests {
             GrafanaConfig {
                 base_url: server.uri(),
                 api_token: Secret::new(TOKEN.to_owned()),
+                ..Default::default()
             },
             Proxy::default(),
         )
@@ -360,55 +308,6 @@ mod tests {
             .respond_with(ResponseTemplate::new(status).set_body_json(body))
             .mount(server)
             .await;
-    }
-
-    #[test]
-    fn validates_required_fields_dimensions_and_periods() {
-        for period in [1, 5, 10, 20, 30, 60, 300, 86_400] {
-            let mut candidate = query();
-            candidate.period = period;
-            GrafanaCloudwatch::validate_query(&candidate).unwrap();
-        }
-        for (expected_field, case) in [
-            ("datasource_uid", 0_u8),
-            ("region", 1),
-            ("namespace", 2),
-            ("metric_name", 3),
-            ("period", 4),
-        ] {
-            let mut candidate = query();
-            match case {
-                0 => candidate.datasource_uid = "  ".to_owned(),
-                1 => candidate.region.clear(),
-                2 => candidate.namespace.clear(),
-                3 => candidate.metric_name.clear(),
-                4 => candidate.period = 61,
-                _ => unreachable!(),
-            }
-            let error = GrafanaCloudwatch::validate_query(&candidate).unwrap_err();
-            assert!(matches!(
-                error.current_context(),
-                MetricsError::InvalidQuery { field, .. } if *field == expected_field
-            ));
-        }
-        let mut blank_dimension = query();
-        blank_dimension
-            .dimensions
-            .insert("blank".to_owned(), " ".to_owned());
-        assert!(matches!(
-            GrafanaCloudwatch::validate_query(&blank_dimension)
-                .unwrap_err()
-                .current_context(),
-            MetricsError::InvalidQuery {
-                field: "dimensions",
-                ..
-            }
-        ));
-        let mut too_many_dimensions = query();
-        too_many_dimensions.dimensions = (0..31)
-            .map(|index| (format!("name-{index}"), "value".to_owned()))
-            .collect();
-        assert!(GrafanaCloudwatch::validate_query(&too_many_dimensions).is_err());
     }
 
     #[tokio::test]
@@ -446,11 +345,12 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let request = GrafanaCloudwatch::build_request(query(), range()).unwrap();
+        let request = GrafanaCloudwatch::build_request(query(), range());
         let series = provider(&server).fetch_metrics(request).await.unwrap();
         assert_eq!(
             series,
             vec![MetricSeries {
+                labels: BTreeMap::new(),
                 points: vec![
                     MetricPoint {
                         timestamp: convert_to_pdt(
@@ -480,12 +380,18 @@ mod tests {
         for (index, body) in bodies.into_iter().enumerate() {
             let server = MockServer::start().await;
             mount(&server, 200, body).await;
-            let request = GrafanaCloudwatch::build_request(query(), range()).unwrap();
+            let request = GrafanaCloudwatch::build_request(query(), range());
             let series = provider(&server).fetch_metrics(request).await.unwrap();
             if index < 2 {
                 assert!(series.is_empty());
             } else {
-                assert_eq!(series, vec![MetricSeries { points: Vec::new() }]);
+                assert_eq!(
+                    series,
+                    vec![MetricSeries {
+                        labels: BTreeMap::new(),
+                        points: Vec::new()
+                    }]
+                );
             }
         }
     }
@@ -517,7 +423,7 @@ mod tests {
         for (case, body) in malformed_bodies {
             let server = MockServer::start().await;
             mount(&server, 200, body).await;
-            let request = GrafanaCloudwatch::build_request(query(), range()).unwrap();
+            let request = GrafanaCloudwatch::build_request(query(), range());
             let error = provider(&server).fetch_metrics(request).await.unwrap_err();
             assert!(
                 matches!(error.current_context(), MetricsError::MalformedResponse),
@@ -539,7 +445,7 @@ mod tests {
             ))
             .mount(&server)
             .await;
-        let request = GrafanaCloudwatch::build_request(query(), range()).unwrap();
+        let request = GrafanaCloudwatch::build_request(query(), range());
         let error = provider(&server).fetch_metrics(request).await.unwrap_err();
         assert!(matches!(
             error.current_context(),
@@ -556,7 +462,7 @@ mod tests {
             json!({"results": {"A": {"error": format!("credential {TOKEN} rejected")}}}),
         )
         .await;
-        let request = GrafanaCloudwatch::build_request(query(), range()).unwrap();
+        let request = GrafanaCloudwatch::build_request(query(), range());
         let error = provider(&server).fetch_metrics(request).await.unwrap_err();
         assert!(matches!(
             error.current_context(),
@@ -571,7 +477,7 @@ mod tests {
         for (status, unauthorized) in [(401, true), (502, false)] {
             let server = MockServer::start().await;
             mount(&server, status, json!({"message": "failed"})).await;
-            let request = GrafanaCloudwatch::build_request(query(), range()).unwrap();
+            let request = GrafanaCloudwatch::build_request(query(), range());
             let error = provider(&server).fetch_metrics(request).await.unwrap_err();
             if unauthorized {
                 assert!(matches!(
@@ -588,18 +494,68 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_request_validates_before_sending() {
+    async fn session_cookie_auth_does_not_send_bearer_and_redacts_query_errors() {
+        for rejected in [false, true] {
+            let server = MockServer::start().await;
+            let body = if rejected {
+                json!({"results": {"A": {"error": format!("session {TOKEN} rejected")}}})
+            } else {
+                json!({"results": {"A": {"frames": []}}})
+            };
+            Mock::given(method("POST"))
+                .and(path("/api/ds/query"))
+                .and(header(
+                    "cookie",
+                    format!("grafana_session={TOKEN}").as_str(),
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&server)
+                .await;
+            let provider = GrafanaCloudwatch::new(
+                GrafanaConfig {
+                    base_url: server.uri(),
+                    api_token: Secret::new(TOKEN.to_owned()),
+                    auth_type: super::super::GrafanaAuthType::SessionCookie,
+                },
+                Proxy::default(),
+            );
+            let result = provider
+                .fetch_metrics(GrafanaCloudwatch::build_request(query(), range()))
+                .await;
+            if rejected {
+                let error = result.unwrap_err();
+                assert!(
+                    matches!(error.current_context(), MetricsError::QueryRefused { reason } if reason == "session [REDACTED] rejected")
+                );
+                assert!(!format!("{error:?}").contains(TOKEN));
+            } else {
+                assert!(result.unwrap().is_empty());
+            }
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0].headers.get("authorization").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_query_validation_is_delegated_to_the_backend() {
         let server = MockServer::start().await;
+        mount(
+            &server,
+            200,
+            json!({"results": {"A": {"error": "unsupported period"}}}),
+        )
+        .await;
         let mut invalid = query();
         invalid.period = 90;
-        let error = GrafanaCloudwatch::build_request(invalid, range()).unwrap_err();
-        assert!(matches!(
-            error.current_context(),
-            MetricsError::InvalidQuery {
-                field: "period",
-                ..
-            }
-        ));
-        assert!(server.received_requests().await.unwrap().is_empty());
+        let request = GrafanaCloudwatch::build_request(invalid, range());
+        let error = provider(&server).fetch_metrics(request).await.unwrap_err();
+        assert!(
+            matches!(error.current_context(), MetricsError::QueryRefused { reason } if reason == "unsupported period")
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["queries"][0]["period"], "90");
     }
 }
