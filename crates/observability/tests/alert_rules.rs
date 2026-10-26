@@ -14,7 +14,7 @@ use actix_web::{
 };
 use common_types::alert_rules::stored::AlertRuleStatus;
 use common_utils::date_time;
-use diesel::{Connection, PgConnection, RunQueryDsl};
+use diesel::{Connection, ExpressionMethods, PgConnection, QueryDsl, RunQueryDsl};
 use diesel_models::{
     errors::DatabaseError,
     observability::{alert_manager::alert_rules as storage, schema},
@@ -624,7 +624,7 @@ async fn postgres_repository_stores_replaces_claims_and_deletes_rules() {
         .any(|tag| tag.tag_key == "service" && tag.tag_value == "rds"));
 
     let service_tag = tags.iter().find(|tag| tag.tag_key == "service").unwrap();
-    let classification_only =
+    let classification_only: common_types::alert_management::TagConfiguration =
         serde_json::from_value(json!({"version":"v1", "grouping":{"group_by":[]}})).unwrap();
     let grouping: common_types::alert_management::TagConfiguration =
         serde_json::from_value(json!({"version":"v1", "grouping":{"group_by":["alert_rule_id"]}}))
@@ -639,6 +639,23 @@ async fn postgres_repository_stores_replaces_claims_and_deletes_rules() {
             .unwrap(),
         CreateTagOutcome::SystemOwned
     );
+    assert!(store
+        .create_infra_tag(
+            AlertTagNew::try_new(
+                "service".to_owned(),
+                "poison".to_owned(),
+                classification_only.clone(),
+            )
+            .unwrap(),
+        )
+        .await
+        .is_err());
+    assert!(store
+        .create_infra_tag(
+            AlertTagNew::try_new("service".to_owned(), "ec2".to_owned(), grouping.clone()).unwrap(),
+        )
+        .await
+        .is_err());
     let ec2_tag = match store
         .create_infra_tag(
             predefined_catalogue()
@@ -737,7 +754,10 @@ async fn postgres_repository_stores_replaces_claims_and_deletes_rules() {
         .unwrap();
     let stale_assignments = assignments_for_rule(
         &stale_rule.alerts_configuration,
-        ExplicitAssignments::default(),
+        ExplicitAssignments {
+            component: Some("stale-postgres".to_owned()),
+            team: Some("stale-platform".to_owned()),
+        },
     )
     .unwrap();
 
@@ -755,6 +775,27 @@ async fn postgres_repository_stores_replaces_claims_and_deletes_rules() {
         Some(ec2_rule),
     )
     .await;
+    let current_configuration = store
+        .find_alert_rule("rds-writer-cpu")
+        .await
+        .unwrap()
+        .unwrap()
+        .alerts_configuration;
+
+    // None of the stale-only definitions exist when the second connection begins reconciliation.
+    for (key, value) in [
+        ("service", "rds"),
+        ("component", "stale-postgres"),
+        ("team", "stale-platform"),
+    ] {
+        diesel::delete(
+            schema::alert_tags::table
+                .filter(schema::alert_tags::tag_key.eq(key))
+                .filter(schema::alert_tags::tag_value.eq(value)),
+        )
+        .execute(&mut connection)
+        .unwrap();
+    }
     assert_eq!(
         reconciler
             .reconcile_infra_tags(
@@ -773,7 +814,26 @@ async fn postgres_repository_stores_replaces_claims_and_deletes_rules() {
     assert!(!tags
         .iter()
         .any(|tag| tag.tag_key == "service" && tag.tag_value == "rds"));
+    assert!(!tags.iter().any(|tag| {
+        (tag.tag_key == "component" && tag.tag_value == "stale-postgres")
+            || (tag.tag_key == "team" && tag.tag_value == "stale-platform")
+    }));
     assert!(tags.iter().any(|tag| tag.id == custom_id));
+    let all_tags = store.list_tags().await.unwrap();
+    assert!(!all_tags.iter().any(|tag| {
+        (tag.tag_key == "service" && tag.tag_value == "rds")
+            || (tag.tag_key == "component" && tag.tag_value == "stale-postgres")
+            || (tag.tag_key == "team" && tag.tag_value == "stale-platform")
+    }));
+    assert_eq!(
+        store
+            .find_alert_rule("rds-writer-cpu")
+            .await
+            .unwrap()
+            .unwrap()
+            .alerts_configuration,
+        current_configuration
+    );
 
     // Explicit administration is previewable and idempotent, without touching scheduling.
     assert!(

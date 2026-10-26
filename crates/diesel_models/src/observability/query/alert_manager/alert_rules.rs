@@ -4,6 +4,18 @@ use diesel::prelude::*;
 use error_stack::report;
 use time::PrimitiveDateTime;
 
+#[derive(Debug)]
+enum ReconcileTransactionError {
+    Database(diesel::result::Error),
+    StaleConfiguration,
+}
+
+impl From<diesel::result::Error> for ReconcileTransactionError {
+    fn from(error: diesel::result::Error) -> Self {
+        Self::Database(error)
+    }
+}
+
 use crate::{
     errors::DatabaseError,
     observability::{
@@ -56,7 +68,8 @@ impl AlertRule {
         system_tags: Vec<AlertTagNew>,
         explicit_tags: Vec<AlertTagNew>,
     ) -> StorageResult<ReconcileInfraTagsOutcome> {
-        conn.raw_connection()
+        match conn
+            .raw_connection()
             .transaction_async(move |connection| async move {
                 let tag_ids =
                     prepare_tags(&connection, &system_keys, system_tags, explicit_tags).await?;
@@ -71,15 +84,21 @@ impl AlertRule {
                     return Ok(ReconcileInfraTagsOutcome::MissingRule);
                 };
                 if configuration != expected_configuration {
-                    return Ok(ReconcileInfraTagsOutcome::StaleConfiguration);
+                    return Err(ReconcileTransactionError::StaleConfiguration);
                 }
                 replace_system_mappings(&connection, &id, &system_keys, &tag_ids).await?;
                 Ok(ReconcileInfraTagsOutcome::Applied)
             })
             .await
-            .map_err(|error: diesel::result::Error| {
-                report!(error).change_context(DatabaseError::Others)
-            })
+        {
+            Ok(outcome) => Ok(outcome),
+            Err(ReconcileTransactionError::StaleConfiguration) => {
+                Ok(ReconcileInfraTagsOutcome::StaleConfiguration)
+            }
+            Err(ReconcileTransactionError::Database(error)) => {
+                Err(report!(error).change_context(DatabaseError::Others))
+            }
+        }
     }
 
     pub async fn find(

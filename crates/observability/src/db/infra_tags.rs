@@ -9,7 +9,9 @@ use crate::{
     db::Store,
     domain_models::{
         alert_rules::AlertRule,
-        infra_tags::{InfraTagAssignments, ReconcileInfraTagsOutcome, SYSTEM_TAG_KEYS},
+        infra_tags::{
+            predefined_catalogue, InfraTagAssignments, ReconcileInfraTagsOutcome, SYSTEM_TAG_KEYS,
+        },
         tags::{AlertTagNew, CreateTagOutcome},
     },
 };
@@ -48,6 +50,13 @@ impl InfraTagsInterface for Store {
     }
 
     async fn create_infra_tag(&self, new: AlertTagNew) -> StorageResult<CreateTagOutcome> {
+        let is_predefined = predefined_catalogue()
+            .into_iter()
+            .filter_map(|descriptor| descriptor.into_new().ok())
+            .any(|catalogue_tag| catalogue_tag == new);
+        if !is_predefined {
+            return Err(report!(DatabaseError::Others));
+        }
         diesel_models::observability::alert_manager::tags::AlertTagNew::from(new)
             .create(&self.connection().await?)
             .await
